@@ -660,6 +660,102 @@ main{padding:20px 24px;padding-left:max(20px, env(safe-area-inset-left));padding
   ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
   ::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
 </style>
+
+<!-- Firebase SDK -->
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import { getFirestore, doc, setDoc, getDoc, onSnapshot, collection } 
+  from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyDGzA6HBZ_GijzwZPEPHmOWNGH6yLksnco",
+  authDomain: "scp-planning.firebaseapp.com",
+  projectId: "scp-planning",
+  storageBucket: "scp-planning.firebasestorage.app",
+  messagingSenderId: "333408887791",
+  appId: "1:333408887791:web:5926c2365613a2261d4c1a"
+};
+
+const app = initializeApp(firebaseConfig);
+const db  = getFirestore(app);
+
+// ── Sync status indicator ────────────────────────────────────
+function setSyncStatus(status) {
+  // status: 'syncing' | 'ok' | 'error' | 'offline'
+  let el = document.getElementById("sync-status");
+  if (!el) return;
+  const cfg = {
+    syncing : { icon:"⏳", text:"Synchronisation…", color:"#d97706", bg:"#fef3c7" },
+    ok      : { icon:"☁️", text:"Synchronisé",      color:"#15803d", bg:"#dcfce7" },
+    error   : { icon:"❌", text:"Erreur sync",       color:"#991b1b", bg:"#fee2e2" },
+    offline : { icon:"📴", text:"Hors ligne",        color:"#6b7280", bg:"#f3f4f6" },
+  };
+  const c = cfg[status] || cfg.offline;
+  el.innerHTML = `<span style="background:${c.bg};color:${c.color};padding:3px 10px;border-radius:20px;font-size:0.72rem;font-weight:700;font-family:Nunito,sans-serif;display:flex;align-items:center;gap:5px;">${c.icon} ${c.text}</span>`;
+}
+
+// ── Save all data to Firestore ───────────────────────────────
+window.saveToCloud = async function() {
+  try {
+    setSyncStatus("syncing");
+    const data = {
+      planningData : window._planningData,
+      modifications: window._modifications,
+      wishData     : window._wishData,
+      notes        : window._notes,
+      updatedAt    : new Date().toISOString()
+    };
+    await setDoc(doc(db, "scp", "planning2027"), data);
+    setSyncStatus("ok");
+  } catch(e) {
+    console.error("Firebase save error:", e);
+    setSyncStatus("error");
+  }
+};
+
+// ── Load data from Firestore ─────────────────────────────────
+window.loadFromCloud = async function() {
+  try {
+    setSyncStatus("syncing");
+    const snap = await getDoc(doc(db, "scp", "planning2027"));
+    if (snap.exists()) {
+      const data = snap.data();
+      if (data.planningData)  window._applyCloudData(data);
+      setSyncStatus("ok");
+      return true;
+    }
+    setSyncStatus("ok");
+    return false;
+  } catch(e) {
+    console.error("Firebase load error:", e);
+    setSyncStatus("error");
+    return false;
+  }
+};
+
+// ── Real-time listener — updates all devices instantly ───────
+window.startRealtimeSync = function() {
+  onSnapshot(doc(db, "scp", "planning2027"), (snap) => {
+    if (snap.exists() && !window._isSaving) {
+      const data = snap.data();
+      if (data.planningData) {
+        window._applyCloudData(data);
+        setSyncStatus("ok");
+      }
+    }
+  }, (err) => {
+    setSyncStatus("error");
+  });
+};
+
+// Network status
+window.addEventListener("online",  () => setSyncStatus("ok"));
+window.addEventListener("offline", () => setSyncStatus("offline"));
+
+// Ready signal
+window._firebaseReady = true;
+console.log("Firebase connected ✅");
+</script>
 </head>
 <body>
 
@@ -667,6 +763,7 @@ main{padding:20px 24px;padding-left:max(20px, env(safe-area-inset-left));padding
 <header>
   <h1><span style="color:var(--gold);font-size:1.4rem;">⚕</span> Planning <span class="yr">SCP</span> · Infirmières Libérales · <span class="yr">Houppeville</span></h1>
   <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+    <div id="sync-status"></div>
     <span style="font-size:0.72rem;color:rgba(255,255,255,0.4);white-space:nowrap;">18 jan 2027 → 9 jan 2028</span>
     <button class="hbtn" onclick="openJournal()">📋 Journal</button>
     <button class="hbtn" onclick="document.getElementById('import-json').click()">📥 Importer</button>
@@ -2715,6 +2812,101 @@ function showWERotationAlert() {
     }
   }
 }
+
+
+// ============================================================
+// FIREBASE BRIDGE — sync local data with cloud
+// ============================================================
+
+// Expose data to Firebase module
+window._planningData  = planningData;
+window._modifications = modifications;
+window._wishData      = wishData;
+window._notes         = notes;
+window._isSaving      = false;
+
+// Apply cloud data to local state
+window._applyCloudData = function(data) {
+  window._isSaving = true;
+  try {
+    // Update planningData
+    if (data.planningData) {
+      for (const [d,v] of Object.entries(data.planningData)) {
+        if (planningData[d]) Object.assign(planningData[d], v);
+        else planningData[d] = v;
+      }
+    }
+    // Update modifications
+    if (data.modifications) Object.assign(modifications, data.modifications);
+    // Update wishData
+    if (data.wishData) {
+      for (const n of NURSES) {
+        if (data.wishData[n]) wishData[n] = data.wishData[n];
+      }
+    }
+    // Update notes
+    if (data.notes && Array.isArray(data.notes)) {
+      notes.splice(0, notes.length, ...data.notes);
+    }
+    // Refresh UI
+    applyAllWishes();
+    buildAllMonths();
+    renderStats();
+    // Update notes indicator
+    updateNotesIndicator();
+  } finally {
+    window._isSaving = false;
+  }
+};
+
+// Override saveData to also sync to cloud
+const _origSaveData = saveData;
+window.saveData = saveData = function() {
+  _origSaveData();
+  window._planningData = planningData;
+  if (window.saveToCloud) window.saveToCloud();
+};
+
+const _origSaveMods = saveMods;
+window.saveMods = saveMods = function() {
+  _origSaveMods();
+  window._modifications = modifications;
+  if (window.saveToCloud) window.saveToCloud();
+};
+
+const _origSaveWishes = saveWishes;
+window.saveWishes = saveWishes = function() {
+  _origSaveWishes();
+  window._wishData = wishData;
+  if (window.saveToCloud) window.saveToCloud();
+};
+
+const _origSaveNotes = saveNotes;
+window.saveNotes = saveNotes = function() {
+  _origSaveNotes();
+  window._notes = notes;
+  if (window.saveToCloud) window.saveToCloud();
+};
+
+// On app start: load from cloud, then start real-time sync
+async function initCloudSync() {
+  if (!window._firebaseReady) {
+    // Wait for Firebase module to load
+    await new Promise(resolve => {
+      const check = setInterval(() => {
+        if (window._firebaseReady) { clearInterval(check); resolve(); }
+      }, 100);
+      setTimeout(() => { clearInterval(check); resolve(); }, 5000);
+    });
+  }
+  // Load initial data from cloud
+  await window.loadFromCloud();
+  // Start real-time listener
+  window.startRealtimeSync();
+}
+
+// Initialize after app is ready
+setTimeout(initCloudSync, 500);
 
 // ============================================================
 // INIT
